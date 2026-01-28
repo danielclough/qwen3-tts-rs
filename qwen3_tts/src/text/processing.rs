@@ -470,17 +470,19 @@ impl TextProcessor {
         let normalized = normalize_text(text);
         match &self.tokenizer {
             Some(tokenizer) => {
-                let encoding = tokenizer.encode(normalized.as_str(), false).unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to encode text: {:?}\n\
+                let encoding = tokenizer
+                    .encode(normalized.as_str(), false)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "Failed to encode text: {:?}\n\
                             This may indicate that special tokens like <|im_start|> or <|im_end|> \
                             are not properly defined in the tokenizer. \
                             Ensure you're using a valid tokenizer.json from the Qwen model.\n\
                             Text being tokenized (first 200 chars): {:?}",
-                        e,
-                        &text.chars().take(200).collect::<String>()
-                    )
-                });
+                            e,
+                            &text.chars().take(200).collect::<String>()
+                        )
+                    });
                 encoding.get_ids().to_vec()
             }
             None => {

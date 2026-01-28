@@ -1,10 +1,13 @@
 target/
+Cargo.lock
 
 # wildcards
 .*
 *.md
 *.txt
 *.wav
+*.log
+debug/*
 
 # allow
 !.gitignore

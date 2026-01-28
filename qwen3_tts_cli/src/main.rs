@@ -92,13 +92,30 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize tracing subscriber if --tracing flag is passed
+    // INFO+ goes to stdout, ALL levels go to qwen3-tts.log
     if cli.tracing {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-            )
-            .init();
+        use tracing_subscriber::{
+            EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+        };
+
+        // Create log file in debug/ directory with timestamp
+        let debug_dir = std::path::Path::new("debug");
+        if !debug_dir.exists() {
+            std::fs::create_dir_all(debug_dir).expect("Failed to create debug directory");
+        }
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let log_path = debug_dir.join(format!("qwen3-tts_{}.log", timestamp));
+        let log_file = std::fs::File::create(&log_path).expect("Failed to create log file");
+
+        // File layer: ALL levels (trace and above)
+        let file_layer = fmt::layer()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .with_filter(EnvFilter::new("trace"));
+
+        tracing_subscriber::registry().with(file_layer).init();
+
+        println!("\n\tDebug logs written to {}\n", log_path.display());
     }
 
     // Convert CLI args to lib structs
@@ -420,6 +437,9 @@ fn main() -> Result<()> {
 
     if is_batch_mode {
         println!("Batch complete: {} items", batch_items.len());
+    } else {
+        let output_path = get_output_path(&io_args, 0, batch_items[0].output.as_deref(), false);
+        println!("File saved to {}", output_path.display());
     }
 
     // Print timing summary if timing feature is enabled
