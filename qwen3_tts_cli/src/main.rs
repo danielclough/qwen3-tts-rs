@@ -431,6 +431,12 @@ fn main() -> Result<()> {
                     &clone_params,
                     &synth_item,
                 )?;
+
+                if i == 0 {
+                    if let Some(ref save_path) = io_args.save_prompt {
+                        println!("Saved voice prompt to {}", save_path.display());
+                    }
+                }
             }
         }
     }

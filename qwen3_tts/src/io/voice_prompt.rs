@@ -60,7 +60,8 @@ pub fn save_voice_prompt(
     let code_data: Option<Vec<i64>>;
     let code_shape: Option<Vec<usize>>;
     if let Some(ref code) = prompt.ref_code {
-        code_data = Some(code.to_vec2::<i64>()?.into_iter().flatten().collect());
+        let code_i64 = code.to_dtype(candle_core::DType::I64)?;
+        code_data = Some(code_i64.to_vec2::<i64>()?.into_iter().flatten().collect());
         code_shape = Some(code.dims().to_vec());
     } else {
         code_data = None;
@@ -132,7 +133,10 @@ pub fn load_voice_prompt(
         .context("Voice prompt file missing ref_spk_embedding")?
         .to_dtype(dtype)?;
 
-    let ref_code = tensors.get("ref_code").cloned();
+    let ref_code = tensors
+        .get("ref_code")
+        .map(|t| t.to_dtype(candle_core::DType::U32))
+        .transpose()?;
 
     // Determine icl_mode: true if we have ref_code and ref_text and not x_vector_only
     let icl_mode =
