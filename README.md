@@ -20,14 +20,38 @@ A Rust implementation of the Qwen3-TTS text-to-speech model using the [Candle](h
 - Full control over generation parameters
 - Multi-language support: Chinese, English, Japanese, Korean, French, German, Spanish (+ auto-detect)
 
-## Architecture Overview
+## Quick Start
 
-Qwen3-TTS uses a hierarchical generation approach:
+```bash
+# macOS
+cargo install qwen_tts_cli --features metal,accelerate,audio-loading
+# Linux (NVIDIA GPU)
+cargo install qwen_tts_cli --features cuda,flash-attn,cudnn,nccl,audio-loading
+# Windows (NVIDIA GPU)
+cargo install qwen_tts_cli --features cuda,flash-attn,cudnn,audio-loading
 
-1. **Speaker Encoder**: Extracts speaker embeddings from reference audio using ECAPA-TDNN
-2. **Talker Model**: Generates semantic tokens (codebook 0) using multimodal RoPE
-3. **Code Predictor**: Generates acoustic tokens (codebooks 1-31)
-4. **Audio Tokenizer**: Decodes all 32 codebooks to audio waveforms
+# clone voice from audio and transcript (use any audio w/ or w/out transcript)
+qwen-tts --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --ref-audio "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav" \
+  --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." \
+  --text "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye." \
+  --output output_cloned_default_voice.wav
+```
+
+### Cargo Features
+
+| Feature | Description |
+|---|---|
+| `metal` | Apple Metal GPU acceleration (macOS) |
+| `accelerate` | Apple Accelerate framework (macOS) |
+| `cuda` | NVIDIA CUDA GPU acceleration |
+| `cudnn` | NVIDIA cuDNN acceleration (requires CUDA) |
+| `flash-attn` | Flash Attention (requires CUDA) |
+| `nccl` | NVIDIA NCCL multi-GPU support |
+| `mkl` | Intel MKL acceleration |
+| `audio-loading` | Load audio files (required for voice cloning from file/URL) |
+| `timing` | Print timing/profiling information |
+
 
 ## CLI Usage
 
@@ -35,13 +59,13 @@ Qwen3-TTS uses a hierarchical generation approach:
 
 ```bash
 # Using a predefined speaker (CustomVoice mode)
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --output hello.wav
 
 # With language specification
-cargo run --release -- \
+qwen-tts \
     --text "你好，世界！" \
     --speaker vivian \
     --language chinese \
@@ -55,7 +79,7 @@ cargo run --release -- \
 Use built-in speaker voices with optional instructions:
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --text "Welcome to our service." \
     --speaker vivian \
     --instruct "Speak warmly and professionally" \
@@ -67,7 +91,7 @@ cargo run --release -- \
 Create a voice from a text description:
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --text "Hello, I'm your new assistant." \
     --voice-design "A warm, friendly female voice with a slight British accent" \
     --output designed_voice.wav
@@ -80,20 +104,20 @@ Clone a voice from reference audio:
 ```bash
 # X-vector only mode (faster, uses only speaker embedding)
 # No --ref-text "..."
-cargo run --release -- \
+qwen-tts \
     --text "Quick voice cloning." \
     --ref-audio reference.wav \
     --output cloned_fast.wav
 
 # From local file 
-cargo run --release -- \
+qwen-tts \
     --text "This is my cloned voice speaking." \
     --ref-audio reference.wav \
     --ref-text "The transcript of the reference audio." \
     --output output_cloned.wav
 
 # From URL
-cargo run --features cuda,flash-attn,audio-loading -- \
+cargo run --features cuda,cudnn,flash-attn,audio-loading -- \
   --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --ref-audio "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav" \
   --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." \
@@ -115,7 +139,7 @@ And here's the third one.
 ```
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --file inputs.txt \
     --speaker vivian \
     --output-dir ./outputs/
@@ -138,7 +162,7 @@ For more control, use JSON format (detected automatically from `.json` extension
 ```
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --file inputs.json \
     --speaker vivian \
     --output-dir ./outputs/
@@ -150,7 +174,7 @@ Save computed voice prompts for reuse (avoids recomputing speaker embeddings):
 
 ```bash
 # Save voice prompt while generating
-cargo run --release -- \
+qwen-tts \
     --text "First generation." \
     --ref-audio reference.wav \
     --ref-text "Reference transcript." \
@@ -158,13 +182,13 @@ cargo run --release -- \
     --output first.wav
 
 # Reuse saved prompt (faster, no need for reference audio)
-cargo run --release -- \
+qwen-tts \
     --text "Second generation with same voice." \
     --load-prompt voice_prompt.safetensors \
     --output second.wav
 
 # Create prompt without generating audio
-cargo run --release -- \
+qwen-tts \
     --ref-audio reference.wav \
     --ref-text "Reference transcript." \
     --save-prompt voice_prompt.safetensors
@@ -175,7 +199,7 @@ cargo run --release -- \
 #### Talker Parameters (Semantic Token Generation)
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --temperature 0.9 \
@@ -186,14 +210,14 @@ cargo run --release -- \
     --output output.wav
 
 # Greedy decoding (deterministic)
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --greedy \
     --output output.wav
 
 # Set random seed for reproducibility
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --seed 42 \
@@ -203,6 +227,10 @@ cargo run --release -- \
 ##### Max Tokens (default: 2048)
 
 If you want to generate long form text you will need to adjust the `--max-tokens`.
+
+The "v1" 25Hz model has not yet been released but should allow for very long form generation.
+
+The "v2" 12Hz model works now and should generate audio up to around 10 minutes before it becomes decoherent.
 
 The "Hz" in the model names literally means "tokens per second".
 
@@ -231,14 +259,13 @@ Given: `tokens = duration_seconds × token_rate_hz`
 | 5     | 2,500  | 17 min   | 12,750  | 25,500  |
 | 12    | 6,000  | 40 min   | 30,000  | 60,000  |
 | 25    | 12,500 | 83 min   | 62,250  | 124,500 |
-```
 
 #### Subtalker Parameters (Acoustic Token Generation)
 
 Control the code predictor that generates codebooks 1-31:
 
 ```bash
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --subtalker-temperature 0.9 \
@@ -247,7 +274,7 @@ cargo run --release -- \
     --output output.wav
 
 # Disable subtalker sampling (greedy)
-cargo run --release -- \
+qwen-tts \
     --text "Hello, world!" \
     --speaker vivian \
     --no-subtalker-sample \
@@ -258,28 +285,28 @@ cargo run --release -- \
 
 ```bash
 # Use CPU
-cargo run --release -- \
+qwen-tts \
     --text "Hello!" \
     --speaker vivian \
     --device cpu \
     --output output.wav
 
 # Use CUDA GPU
-cargo run --release -- \
+qwen-tts \
     --text "Hello!" \
     --speaker vivian \
     --device cuda \
     --output output.wav
 
 # Use Metal (macOS)
-cargo run --release -- \
+qwen-tts \
     --text "Hello!" \
     --speaker vivian \
     --device metal \
     --output output.wav
 
 # Set data type
-cargo run --release -- \
+qwen-tts \
     --text "Hello!" \
     --speaker vivian \
     --dtype bf16 \
@@ -292,19 +319,13 @@ Standalone CLI for audio encoding/decoding (codec testing):
 
 ```bash
 # Encode audio to codes
-cargo run --release --example tokenizer_cli --features audio-loading -- encode \
-    --input audio.wav \
-    --output codes.json
+qwen-tts tokenizer encode --input audio.wav --output codes.json
 
 # Decode codes back to audio
-cargo run --release --example tokenizer_cli --features audio-loading -- decode \
-    --input codes.json \
-    --output reconstructed.wav
+qwen-tts tokenizer decode --input codes.json --output reconstructed.wav
 
 # Round-trip test (encode then decode)
-cargo run --release --example tokenizer_cli --features audio-loading -- roundtrip \
-    --input audio.wav \
-    --output reconstructed.wav
+qwen-tts tokenizer roundtrip --input audio.wav --output reconstructed.wav
 ```
 
 The codes JSON format:
