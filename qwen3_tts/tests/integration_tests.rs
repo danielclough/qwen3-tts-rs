@@ -708,6 +708,199 @@ mod generation_tests {
     }
 }
 
+mod voice_clone_prompt_tests {
+    use super::*;
+    use candle_core::Tensor;
+
+    fn load_base_model(device: &Device) -> qwen3_tts::model::Model {
+        let model_dir = get_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        let loader = ModelLoader::from_local_dir(&model_dir).expect("Failed to create loader");
+        let config = LoaderConfig {
+            dtype: DType::F32,
+            load_tokenizer: false,
+            load_text_tokenizer: true,
+            load_generate_config: true,
+            use_flash_attn: false,
+        };
+        loader
+            .load_tts_model(device, &config)
+            .expect("Failed to load model")
+    }
+
+    #[test]
+    fn test_voice_clone_prompt_resamples_non_24khz() {
+        let device = get_test_device();
+        let mut model = load_base_model(&device);
+
+        // 1 second at 48kHz
+        let audio_data: Vec<f32> = (0..48000)
+            .map(|i| {
+                let t = i as f32 / 48000.0;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+            })
+            .collect();
+        let audio =
+            Tensor::from_vec(audio_data, (48000,), &device).expect("Failed to create tensor");
+
+        let result =
+            model.create_voice_clone_prompt_with_sample_rate(&audio, 48000, None, true);
+        assert!(
+            result.is_ok(),
+            "Resampling 48kHz→24kHz should succeed: {:?}",
+            result.err()
+        );
+        let prompt = result.unwrap();
+        assert!(prompt.x_vector_only_mode, "Should be x_vector_only mode");
+    }
+
+    #[test]
+    fn test_voice_clone_prompt_passthrough_24khz() {
+        let device = get_test_device();
+        let mut model = load_base_model(&device);
+
+        // 1 second at 24kHz
+        let audio_data: Vec<f32> = (0..24000)
+            .map(|i| {
+                let t = i as f32 / 24000.0;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+            })
+            .collect();
+        let audio =
+            Tensor::from_vec(audio_data, (24000,), &device).expect("Failed to create tensor");
+
+        let result =
+            model.create_voice_clone_prompt_with_sample_rate(&audio, 24000, None, true);
+        assert!(
+            result.is_ok(),
+            "24kHz passthrough should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "onnx-xvector")]
+    fn test_extract_code_output_shapes() {
+        use qwen3_tts::audio::encoder::xvector::XVectorExtractor;
+
+        let device = get_test_device();
+        let model_dir = get_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        let onnx_path = model_dir.join("campplus_cn_common.onnx");
+        if !onnx_path.exists() {
+            eprintln!("Skipping test_extract_code_output_shapes - ONNX model not found");
+            return;
+        }
+
+        let extractor =
+            XVectorExtractor::load(&onnx_path, &device).expect("Failed to load ONNX model");
+
+        // 1 second of 16kHz sine wave
+        let audio: Vec<f32> = (0..16000)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+            })
+            .collect();
+
+        let (xvec, ref_mel) = extractor.extract_code(&audio).expect("extract_code failed");
+
+        // x-vector should be 1D with 192 dims
+        let xvec_dims = xvec.dims();
+        assert_eq!(xvec_dims.len(), 1, "x-vector should be 1D");
+        assert_eq!(xvec_dims[0], 192, "x-vector should have 192 dims");
+
+        // ref_mel should be (T, 80) with T > 0
+        let mel_dims = ref_mel.dims();
+        assert_eq!(mel_dims.len(), 2, "ref_mel should be 2D");
+        assert!(mel_dims[0] > 0, "ref_mel should have >0 time frames");
+        assert_eq!(mel_dims[1], 80, "ref_mel should have 80 mel channels");
+    }
+
+    #[test]
+    #[cfg(feature = "onnx-xvector")]
+    fn test_extract_code_l2_normalized() {
+        use qwen3_tts::audio::encoder::xvector::XVectorExtractor;
+
+        let device = get_test_device();
+        let model_dir = get_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        let onnx_path = model_dir.join("campplus_cn_common.onnx");
+        if !onnx_path.exists() {
+            eprintln!("Skipping test_extract_code_l2_normalized - ONNX model not found");
+            return;
+        }
+
+        let extractor =
+            XVectorExtractor::load(&onnx_path, &device).expect("Failed to load ONNX model");
+
+        let audio: Vec<f32> = (0..16000)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+            })
+            .collect();
+
+        let (xvec, _) = extractor.extract_code(&audio).expect("extract_code failed");
+
+        // L2 norm should be ~1.0
+        let norm = xvec
+            .sqr()
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .sqrt()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(
+            (norm - 1.0).abs() < 1e-4,
+            "x-vector L2 norm should be ~1.0, got {}",
+            norm
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "onnx-xvector")]
+    fn test_extract_code_ref_mel_shape_matches_v1() {
+        use qwen3_tts::audio::encoder::xvector::{XVectorExtractor, sox_norm};
+        use qwen3_tts::audio::mel_v1::MelSpectrogramFeaturesV1;
+
+        let device = get_test_device();
+        let model_dir = get_model("Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        let onnx_path = model_dir.join("campplus_cn_common.onnx");
+        if !onnx_path.exists() {
+            eprintln!(
+                "Skipping test_extract_code_ref_mel_shape_matches_v1 - ONNX model not found"
+            );
+            return;
+        }
+
+        let extractor =
+            XVectorExtractor::load(&onnx_path, &device).expect("Failed to load ONNX model");
+
+        let audio: Vec<f32> = (0..16000)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5
+            })
+            .collect();
+
+        let (_, ref_mel) = extractor.extract_code(&audio).expect("extract_code failed");
+
+        // Compute V1 mel directly on sox-normed audio
+        let normed = sox_norm(&audio);
+        let mel = MelSpectrogramFeaturesV1::new();
+        let audio_t =
+            Tensor::from_vec(normed.clone(), normed.len(), &device).expect("tensor creation");
+        let v1_mel = mel.forward(&audio_t, &device).expect("mel forward");
+        let v1_transposed = v1_mel.squeeze(0).unwrap().transpose(0, 1).unwrap();
+
+        assert_eq!(
+            ref_mel.dims(),
+            v1_transposed.dims(),
+            "ref_mel from extract_code should match transposed V1 mel shape"
+        );
+    }
+}
+
 mod error_path_tests {
     use super::*;
 

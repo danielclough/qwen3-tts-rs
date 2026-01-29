@@ -1,3 +1,12 @@
+pub mod bigvgan;
+pub mod bigvgan_activations;
+pub mod bigvgan_amp_block;
 pub mod config;
+pub mod dit;
+pub mod dit_attention;
+pub mod dit_block;
+pub mod dit_components;
+pub mod dit_rope;
 pub mod residual_unit;
+pub mod v1;
 pub mod v2;

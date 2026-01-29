@@ -509,6 +509,30 @@ mod tests {
         assert!((mono.samples[2] - 0.0).abs() < 1e-6);
     }
 
+    #[cfg(feature = "audio-loading")]
+    #[test]
+    fn test_resample_changes_length() {
+        let audio = AudioData::new(vec![0.1f32; 48000], 48000, 1);
+        let resampled = super::resample(&audio, 24000).expect("resample should succeed");
+        assert_eq!(resampled.sample_rate, 24000);
+        let diff = (resampled.samples.len() as i64 - 24000i64).abs();
+        assert!(
+            diff <= 100,
+            "expected ~24000 samples, got {} (diff {})",
+            resampled.samples.len(),
+            diff
+        );
+    }
+
+    #[cfg(feature = "audio-loading")]
+    #[test]
+    fn test_resample_noop_same_rate() {
+        let audio = AudioData::new(vec![0.5f32; 24000], 24000, 1);
+        let resampled = super::resample(&audio, 24000).expect("resample should succeed");
+        assert_eq!(resampled.samples.len(), 24000);
+        assert_eq!(resampled.sample_rate, 24000);
+    }
+
     #[test]
     fn test_audio_data_duration() {
         let audio = AudioData::new(vec![0.0; 48000], 48000, 1);

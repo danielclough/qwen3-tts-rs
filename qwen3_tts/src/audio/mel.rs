@@ -51,7 +51,7 @@ pub fn dynamic_range_compression(x: &Tensor, c: f64, clip_val: f64) -> Result<Te
 ///
 /// Uses the periodic Hann window formula: 0.5 * (1 - cos(2*pi*n/N))
 /// This matches torch.hann_window(N, periodic=True)
-fn create_hann_window(size: usize) -> Vec<f32> {
+pub fn create_hann_window(size: usize) -> Vec<f32> {
     (0..size)
         .map(|n| {
             let x = 2.0 * std::f32::consts::PI * n as f32 / size as f32;
@@ -158,7 +158,7 @@ pub fn mel_spectrogram(
 }
 
 /// Apply reflection padding to a 1D signal.
-fn reflect_pad(signal: &[f32], pad_left: usize, pad_right: usize) -> Vec<f32> {
+pub fn reflect_pad(signal: &[f32], pad_left: usize, pad_right: usize) -> Vec<f32> {
     let n = signal.len();
     let mut padded = Vec::with_capacity(n + pad_left + pad_right);
 
@@ -191,7 +191,7 @@ fn reflect_pad(signal: &[f32], pad_left: usize, pad_right: usize) -> Vec<f32> {
 ///
 /// Returns:
 ///   STFT result as Vec of frames, each frame is Vec of complex values (n_fft/2 + 1)
-fn stft(
+pub fn stft(
     signal: &[f32],
     n_fft: usize,
     hop_size: usize,

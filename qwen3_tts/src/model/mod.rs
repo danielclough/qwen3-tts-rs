@@ -439,6 +439,11 @@ impl Model {
         SPEAKER_ENCODER_SAMPLE_RATE
     }
 
+    /// Get the codec tokenizer rate in Hz (e.g. 12 for 12Hz, 25 for 25Hz).
+    pub fn tokenizer_rate(&self) -> usize {
+        self.model.get_config().tokenizer_rate()
+    }
+
     /// Get the model type.
     pub fn model_type(&self) -> TTSModelType {
         self.model_type
@@ -597,14 +602,11 @@ impl Model {
         if x_vector_only_mode {
             Ok(VoiceClonePromptItem::x_vector_only(speaker_embed))
         } else {
-            // For ICL mode, we need ref_code (audio codes) which requires
-            // the audio tokenizer encoder. Since that's not implemented yet,
-            // we create a partial prompt with just the speaker embedding.
-            //
-            // TODO: When audio tokenizer encoder is available, encode the
-            // reference audio to get ref_code for full ICL support.
+            // This method only has the mel spectrogram, not the raw audio,
+            // so it cannot encode reference audio codes for ICL mode.
+            // Use `create_voice_clone_prompt_from_audio` for full ICL support.
             Ok(VoiceClonePromptItem::new(
-                None, // ref_code - not available without encoder
+                None,
                 speaker_embed,
                 x_vector_only_mode,
                 ref_text,
@@ -783,19 +785,29 @@ impl Model {
     ///
     /// # Note
     ///
-    /// If the sample rate is not 24kHz, the audio will need to be resampled
-    /// externally before calling this method. Use the `audio_utils` module
-    /// for resampling support.
+    /// If the sample rate is not 24kHz, the audio is automatically resampled.
+    /// Resampling requires the `audio-loading` feature (for rubato).
     pub fn create_voice_clone_prompt_with_sample_rate(
         &mut self,
         audio: &Tensor,
-        _sample_rate: u32, // TODO: Add automatic resampling
+        sample_rate: u32,
         ref_text: Option<String>,
         x_vector_only_mode: bool,
     ) -> Result<VoiceClonePromptItem> {
-        // For now, assume audio is at correct sample rate
-        // TODO: Add automatic resampling when sample_rate != 24000
-        self.create_voice_clone_prompt_from_audio(audio, ref_text, x_vector_only_mode)
+        let audio = if sample_rate != 24000 {
+            let samples = audio.to_vec1::<f32>()?;
+            let audio_data = crate::audio::utils::AudioData {
+                samples,
+                sample_rate,
+                channels: 1,
+            };
+            let resampled = crate::audio::utils::resample(&audio_data, 24000)?;
+            let len = resampled.samples.len();
+            Tensor::from_vec(resampled.samples, len, audio.device())?
+        } else {
+            audio.clone()
+        };
+        self.create_voice_clone_prompt_from_audio(&audio, ref_text, x_vector_only_mode)
     }
 
     // ===== Validation =====

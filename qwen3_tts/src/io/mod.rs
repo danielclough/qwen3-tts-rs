@@ -83,6 +83,9 @@ pub struct GenerationArgs {
 
     /// Disable sampling for subtalker (use greedy decoding)
     pub no_subtalker_sample: bool,
+
+    /// Estimate max-tokens from text length and use it for generation
+    pub estimate_max_tokens: bool,
 }
 
 /// Per-item synthesis data (for batch or single item processing).

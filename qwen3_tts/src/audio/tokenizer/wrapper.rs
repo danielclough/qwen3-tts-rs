@@ -3,6 +3,7 @@
 use candle_core::{Result, Tensor};
 
 use crate::audio::{encoder::v2::TokenizerV2EncoderOutput, tokenizer::v2::TokenizerV2};
+use crate::audio::tokenizer::v1::{TokenizerV1, TokenizerV1EncoderOutput};
 
 /// Tokenizer type identifier.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -13,13 +14,27 @@ pub enum TokenizerType {
     Hz25,
 }
 
+/// Encoder output from either tokenizer variant.
+pub enum EncoderOutput {
+    V2(TokenizerV2EncoderOutput),
+    V1(TokenizerV1EncoderOutput),
+}
+
+/// Decoder input for V1 (codes + conditioning).
+pub struct V1DecodeInput<'a> {
+    pub codes: &'a Tensor,
+    pub xvectors: &'a Tensor,
+    pub ref_mels: &'a Tensor,
+}
+
 /// Unified wrapper for audio tokenizers.
 ///
 /// Provides a common interface for both 12Hz and 25Hz tokenizers.
 pub enum TokenizerWrapper {
     /// 12Hz tokenizer (V2)
     V2(TokenizerV2),
-    // V1 would be added here for 25Hz tokenizer
+    /// 25Hz tokenizer (V1)
+    V1(TokenizerV1),
 }
 
 impl TokenizerWrapper {
@@ -28,10 +43,16 @@ impl TokenizerWrapper {
         Self::V2(tokenizer)
     }
 
+    /// Create from 25Hz tokenizer.
+    pub fn from_v1(tokenizer: TokenizerV1) -> Self {
+        Self::V1(tokenizer)
+    }
+
     /// Get the tokenizer type.
     pub fn tokenizer_type(&self) -> TokenizerType {
         match self {
             Self::V2(_) => TokenizerType::Hz12,
+            Self::V1(_) => TokenizerType::Hz25,
         }
     }
 
@@ -39,6 +60,7 @@ impl TokenizerWrapper {
     pub fn rate(&self) -> f64 {
         match self {
             Self::V2(t) => t.config().tokenizer_rate(),
+            Self::V1(t) => t.config().tokenizer_rate(),
         }
     }
 
@@ -46,6 +68,7 @@ impl TokenizerWrapper {
     pub fn input_sample_rate(&self) -> usize {
         match self {
             Self::V2(t) => t.input_sample_rate(),
+            Self::V1(t) => t.input_sample_rate(),
         }
     }
 
@@ -53,6 +76,7 @@ impl TokenizerWrapper {
     pub fn output_sample_rate(&self) -> usize {
         match self {
             Self::V2(t) => t.output_sample_rate(),
+            Self::V1(t) => t.output_sample_rate(),
         }
     }
 
@@ -60,6 +84,7 @@ impl TokenizerWrapper {
     pub fn encode_downsample_rate(&self) -> usize {
         match self {
             Self::V2(t) => t.encode_downsample_rate(),
+            Self::V1(t) => t.encode_downsample_rate(),
         }
     }
 
@@ -67,6 +92,7 @@ impl TokenizerWrapper {
     pub fn decode_upsample_rate(&self) -> usize {
         match self {
             Self::V2(t) => t.decode_upsample_rate(),
+            Self::V1(t) => t.decode_upsample_rate(),
         }
     }
 
@@ -74,35 +100,35 @@ impl TokenizerWrapper {
     pub fn has_encoder(&self) -> bool {
         match self {
             Self::V2(t) => t.has_encoder(),
+            Self::V1(t) => t.has_encoder(),
         }
     }
 
-    /// Encode audio waveform to discrete codes.
+    /// Encode audio waveform to discrete codes (V2 only).
     ///
-    /// Requires encoder to be loaded. Use `has_encoder()` to check availability.
-    ///
-    /// # Arguments
-    /// * `audio` - Input audio waveform of shape `(batch, samples)`
-    ///
-    /// # Returns
-    /// * Discrete codes of shape `(batch, num_quantizers, seq_len)`
-    ///
-    /// # Errors
-    /// * Returns error if encoder is not loaded
+    /// For V1, use `encode_v1()` which returns the full `TokenizerV1EncoderOutput`.
     pub fn encode(&mut self, audio: &Tensor) -> Result<Tensor> {
         match self {
             Self::V2(t) => t.encode(audio),
+            Self::V1(_) => candle_core::bail!("V1 encode requires padding_mask; use encode_unified()"),
         }
     }
 
-    /// Encode audio with padding mask for variable-length sequences.
+    /// Encode audio with padding mask.
     ///
-    /// # Arguments
-    /// * `audio` - Input audio waveform of shape `(batch, samples)`
-    /// * `padding_mask` - Mask of shape `(batch, samples)` where 1 = valid, 0 = padding
-    ///
-    /// # Returns
-    /// * Encoder output containing list of code tensors
+    /// Returns a unified `EncoderOutput` enum.
+    pub fn encode_unified(
+        &mut self,
+        audio: &Tensor,
+        padding_mask: &Tensor,
+    ) -> Result<EncoderOutput> {
+        match self {
+            Self::V2(t) => t.encode_with_mask(audio, padding_mask).map(EncoderOutput::V2),
+            Self::V1(t) => t.encode(audio, padding_mask).map(EncoderOutput::V1),
+        }
+    }
+
+    /// Encode audio with padding mask (V2-specific, returns V2 output type).
     pub fn encode_with_mask(
         &mut self,
         audio: &Tensor,
@@ -110,6 +136,7 @@ impl TokenizerWrapper {
     ) -> Result<TokenizerV2EncoderOutput> {
         match self {
             Self::V2(t) => t.encode_with_mask(audio, padding_mask),
+            Self::V1(_) => candle_core::bail!("V1 encoder returns TokenizerV1EncoderOutput; use encode_unified()"),
         }
     }
 
@@ -117,23 +144,38 @@ impl TokenizerWrapper {
     pub fn reset_encoder_state(&mut self) {
         match self {
             Self::V2(t) => t.reset_encoder_state(),
+            Self::V1(_) => {} // V1 encoder is stateless
         }
     }
 
-    /// Decode audio codes to waveform.
+    /// Decode audio codes to waveform (V2 only).
     ///
-    /// Args:
-    ///   codes: Audio codes of shape (batch, seq_len, num_quantizers)
-    ///
-    /// Returns:
-    ///   Audio waveform of shape (batch, samples)
+    /// For V1, use `decode_v1()` which takes additional conditioning inputs.
     pub fn decode(&self, codes: &Tensor) -> Result<Tensor> {
         match self {
             Self::V2(t) => t.decode(codes),
+            Self::V1(_) => candle_core::bail!("V1 decode requires xvectors and ref_mels; use decode_v1()"),
         }
     }
 
-    /// Decode with chunking for long sequences.
+    /// Decode codes to audio (V1-specific).
+    ///
+    /// Returns a list of trimmed waveform tensors, one per batch item.
+    pub fn decode_v1(
+        &self,
+        codes: &Tensor,
+        xvectors: &Tensor,
+        ref_mels: &Tensor,
+    ) -> Result<Vec<Tensor>> {
+        match self {
+            Self::V1(t) => t.decode(codes, xvectors, ref_mels),
+            Self::V2(_) => candle_core::bail!("decode_v1() is only available for V1 tokenizer"),
+        }
+    }
+
+    /// Decode with chunking for long sequences (V2 only).
+    ///
+    /// V1 does not support chunked decoding (DiT processes full sequence).
     pub fn chunked_decode(
         &self,
         codes: &Tensor,
@@ -142,6 +184,7 @@ impl TokenizerWrapper {
     ) -> Result<Tensor> {
         match self {
             Self::V2(t) => t.chunked_decode(codes, chunk_size, left_context_size),
+            Self::V1(_) => candle_core::bail!("V1 does not support chunked decoding"),
         }
     }
 }

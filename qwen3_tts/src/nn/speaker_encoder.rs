@@ -63,7 +63,7 @@ impl TimeDelayNetBlock {
 }
 
 /// Apply 1D reflect padding to a tensor of shape (batch, channels, length).
-fn reflect_pad_1d(xs: &Tensor, pad_left: usize, pad_right: usize) -> Result<Tensor> {
+pub fn reflect_pad_1d(xs: &Tensor, pad_left: usize, pad_right: usize) -> Result<Tensor> {
     if pad_left == 0 && pad_right == 0 {
         return Ok(xs.clone());
     }

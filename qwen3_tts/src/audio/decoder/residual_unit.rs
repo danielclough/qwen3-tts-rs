@@ -1,9 +1,9 @@
 use candle_core::{Result, Tensor};
 use candle_nn::{Module, VarBuilder};
 
-use crate::audio::tokenizer::v2::{
-    causal_conv::{CausalConv1d, CausalConvTranspose1d},
+use crate::audio::tokenizer::{
     snake_beta::SnakeBeta,
+    v2::causal_conv::{CausalConv1d, CausalConvTranspose1d},
 };
 
 /// Residual unit for the vocoder.

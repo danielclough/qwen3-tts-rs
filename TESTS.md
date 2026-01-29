@@ -22,11 +22,24 @@ cargo test --features test-all-macos -- --test-threads=1
 | Feature | Description |
 |---------|-------------|
 | `integration-tests` | Enables integration tests (model downloads) |
-| `test-all` | Integration tests, CPU only |
-| `test-all-cuda` | Integration tests + CUDA support |
-| `test-all-macos` | Integration tests + Metal support |
+| `v1-ref-tests` | Enables V1 tokenizer reference tests |
+| `onnx-xvector` | Enables ONNX x-vector extraction (V1 tokenizer). Requires system `protoc`. |
+| `test-all` | `integration-tests` + `v1-ref-tests` |
+| `test-all-cuda` | `test-all` + `cuda` + `audio-loading` |
+| `test-all-macos` | `test-all` + `metal` + `audio-loading` |
+
+Note the difference between runtime features and test features:
+
+- **`cuda`** (or `metal`) only enables GPU support at compile time — it links against CUDA/Metal libraries so the code can run on a GPU. It does not enable any tests.
+- **`test-all-cuda`** (or `test-all-macos`) is a convenience shorthand that combines GPU support with all the test-enabling features (`integration-tests`, `v1-ref-tests`, `audio-loading`). Use this to run the full test suite.
 
 GPU support requires compile-time features because candle links against CUDA/Metal libraries. There's no runtime auto-detection.
+
+To also test V1 ONNX x-vector extraction, add the `onnx-xvector` feature:
+
+```bash
+cargo test --features test-all-cuda,onnx-xvector -- --test-threads=1
+```
 
 ## Test Categories
 
@@ -36,7 +49,13 @@ GPU support requires compile-time features because candle links against CUDA/Met
 cargo test -p qwen3_tts
 ```
 
-Tests struct creation, validation, config parsing. No model downloads.
+Tests struct creation, validation, config parsing, sox_norm, kaldi_fbank. No model downloads.
+
+To include ONNX x-vector unit tests:
+
+```bash
+cargo test -p qwen3_tts --features onnx-xvector
+```
 
 ### Integration Tests (require `integration-tests` feature)
 
@@ -60,6 +79,49 @@ cargo test --features test-all-cuda -- --ignored
 
 # Run all tests including ignored
 cargo test --features test-all-cuda -- --test-threads=1 --include-ignored
+```
+
+## Developer Checks
+
+Run these before submitting changes to catch compile errors and lint issues early.
+
+### cargo check
+
+Faster than a full build — validates that the code compiles without producing binaries.
+
+```bash
+# Default features (CPU)
+cargo check -p qwen3_tts
+
+# With all optional features
+cargo check -p qwen3_tts --features onnx-xvector,audio-loading
+
+# CUDA
+cargo check -p qwen3_tts --features cuda
+
+# CLI crate
+cargo check -p qwen3_tts_cli
+```
+
+### clippy
+
+```bash
+# Default
+cargo clippy -p qwen3_tts
+
+# With optional features
+cargo clippy -p qwen3_tts --features onnx-xvector,audio-loading
+
+# Entire workspace
+cargo clippy --workspace
+```
+
+### Full pre-commit checklist
+
+```bash
+cargo check --release  --all-targets --features cuda,flash-attn,test-all-cuda,onnx-xvector,audio-loading
+cargo test --release --features cuda,flash-attn,test-all-cuda,onnx-xvector,audio-loading -- --test-threads=1
+cargo clippy --release --workspace  --features cuda,flash-attn,test-all-cuda,onnx-xvector,audio-loading
 ```
 
 ## Troubleshooting

@@ -8,28 +8,145 @@ A Rust implementation of the Qwen3-TTS text-to-speech model using the [Candle](h
 
 - Complete implementation of the Qwen3-TTS architecture
 - Speaker encoder (ECAPA-TDNN) for voice cloning
-- 12Hz audio tokenizer (V2) for high-quality audio generation
+- Audio tokenizer support for both V1 (25Hz) and V2 (12Hz) pipelines
+- ONNX-based x-vector speaker embedding extraction (V1 tokenizer, via `onnx-xvector` feature)
+- Automatic audio resampling during voice cloning (any input sample rate → 24kHz, via `audio-loading` feature)
 - Three synthesis modes:
   - **CustomVoice**: Use predefined speaker voices
   - **VoiceDesign**: Create voices from natural language descriptions
-  - **VoiceClone**: Clone voices from reference audio
-- Batch processing for multiple texts
-- Voice prompt caching for faster repeated generation
-- URL-based audio loading for voice cloning
+  - **VoiceClone**: Clone voices from reference audio with in-context learning (ICL) support
+- Batch processing for multiple texts (TXT or JSON input)
+- Voice prompt caching for faster repeated generation (`--save-prompt` / `--load-prompt`)
+- URL-based audio loading for voice cloning (via `audio-loading` feature)
 - Standalone tokenizer CLI for audio codec testing
-- Full control over generation parameters
+- Full control over generation parameters (temperature, top-k, top-p, repetition penalty, seed)
 - Multi-language support: Chinese, English, Japanese, Korean, French, German, Spanish (+ auto-detect)
 
-## Architecture Overview
+## Installation
 
-Qwen3-TTS uses a hierarchical generation approach:
+### System Dependencies
 
-1. **Speaker Encoder**: Extracts speaker embeddings from reference audio using ECAPA-TDNN
-2. **Talker Model**: Generates semantic tokens (codebook 0) using multimodal RoPE
-3. **Code Predictor**: Generates acoustic tokens (codebooks 1-31)
-4. **Audio Tokenizer**: Decodes all 32 codebooks to audio waveforms
+**Rust** (1.85+):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Linux (Debian/Ubuntu):**
+
+```bash
+# Required: build essentials
+sudo apt-get -y install build-essential pkg-config libssl-dev
+
+# For onnx-xvector feature (V1 tokenizer speaker embeddings):
+sudo apt-get -y install protobuf-compiler
+```
+
+**Linux (Fedora/RHEL):**
+
+```bash
+sudo dnf install gcc gcc-c++ openssl-devel pkg-config
+
+# For onnx-xvector feature:
+sudo dnf install protobuf-compiler
+```
+
+**macOS:**
+
+```bash
+# Xcode command line tools (if not already installed)
+xcode-select --install
+
+# For onnx-xvector feature:
+brew install protobuf
+```
+
+**CUDA (Linux, for GPU acceleration):**
+
+Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) (11.8+ recommended). Ensure `nvcc` is on your PATH.
+
+### Building
+
+```bash
+# Basic build (CPU only)
+cargo build --release
+
+# With audio file loading (WAV, MP3, FLAC, etc.) and resampling
+cargo build --release --features audio-loading
+
+# CUDA GPU acceleration
+cargo build --release --features cuda
+
+# CUDA with Flash Attention
+cargo build --release --features flash-attn
+
+# macOS Metal acceleration
+cargo build --release --features metal
+
+# With ONNX x-vector extraction (V1 tokenizer voice cloning)
+cargo build --release --features onnx-xvector
+
+# Combine features as needed
+cargo build --release --features cuda,flash-attn,audio-loading
+```
+
+### Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `audio-loading` | Audio file loading (symphonia) and resampling (rubato). Enables loading WAV/MP3/FLAC/OGG files, URL-based voice cloning, and automatic sample rate conversion. |
+| `cuda` | NVIDIA CUDA GPU acceleration |
+| `cudnn` | cuDNN acceleration (requires `cuda`) |
+| `flash-attn` | Flash Attention (requires `cuda`) |
+| `metal` | Apple Metal GPU acceleration (macOS) |
+| `accelerate` | Apple Accelerate framework (macOS) |
+| `mkl` | Intel MKL acceleration |
+| `onnx-xvector` | ONNX-based x-vector speaker embedding extraction for V1 tokenizer. Requires system `protoc`. |
+| `timing` | Performance timing instrumentation |
 
 ## CLI Usage
+
+### CLI Reference
+
+All available flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-t, --text` | | Text to synthesize (required unless `--file` is used) |
+| `-o, --output` | `output.wav` | Output WAV file path |
+| `-f, --file` | | Input file for batch processing (`.json` or `.txt`) |
+| `--output-dir` | | Output directory for batch mode |
+| `-l, --language` | `auto` | Language code (`auto`, `chinese`, `english`, `japanese`, `korean`, `french`, `german`, `spanish`) |
+| `-M, --model` | | HuggingFace model ID (auto-downloads) |
+| `-p, --model-path` | | Local model directory (overrides `--model`) |
+| `--device` | `cuda` (Linux) / `metal` (macOS) | Compute device (`cpu`, `cuda`, `metal`) |
+| `--dtype` | `bf16` | Data type (`f32`, `f16`, `bf16`) |
+| **Voice selection** | | |
+| `--speaker` | | Speaker name for CustomVoice mode (e.g. `vivian`) |
+| `--instruct` | | Instruction for the speaker |
+| `--voice-design` | | Voice description for VoiceDesign mode |
+| `--ref-audio` | | Path or URL to reference audio for VoiceClone mode |
+| `--ref-text` | | Transcript of the reference audio (enables ICL mode) |
+| `--x-vector-only` | `false` | Force x-vector only mode (skip ICL) |
+| **Prompt caching** | | |
+| `--save-prompt` | | Save computed voice prompt to file |
+| `--load-prompt` | | Load voice prompt from file (skips ref audio processing) |
+| **Generation** | | |
+| `--max-tokens` | `2048` | Maximum tokens to generate |
+| `--temperature` | `0.9` | Sampling temperature |
+| `--top-k` | `50` | Top-k sampling |
+| `--top-p` | `1.0` | Nucleus sampling threshold |
+| `--repetition-penalty` | | Repetition penalty |
+| `--seed` | | Random seed for reproducibility |
+| `--greedy` | `false` | Greedy (deterministic) decoding |
+| `--subtalker-temperature` | `0.9` | Subtalker (acoustic codebook) temperature |
+| `--subtalker-top-k` | `50` | Subtalker top-k |
+| `--subtalker-top-p` | `1.0` | Subtalker nucleus sampling |
+| `--no-subtalker-sample` | `false` | Greedy subtalker decoding |
+| **Debug** | | |
+| `--debug` | `false` | Enable debug output |
+| `--tracing` | `false` | Enable tracing (writes to `debug/` directory) |
+| `--flash-attn` | `false` | Use flash attention (requires `flash-attn` feature) |
 
 ### Basic Text-to-Speech
 
@@ -75,30 +192,49 @@ cargo run --release -- \
 
 #### VoiceClone (Reference Audio)
 
-Clone a voice from reference audio:
+Clone a voice from reference audio. There are two tokenizer versions, and the correct one is selected automatically based on the model you load:
+
+- **V2 (12Hz)** models use a built-in ECAPA-TDNN speaker encoder. No extra features needed.
+- **V1 (25Hz)** models use an external ONNX speaker encoder. Requires building with `--features onnx-xvector`.
+
+Both support two cloning modes:
+
+- **X-vector only** (omit `--ref-text`): Uses only the speaker embedding. Faster, works well for general voice matching.
+- **ICL mode** (provide `--ref-text`): Uses both the speaker embedding and encoded audio codes for in-context learning. Higher quality voice cloning.
+
+Reference audio at any sample rate is automatically resampled (requires `audio-loading` feature).
 
 ```bash
-# X-vector only mode (faster, uses only speaker embedding)
-# No --ref-text "..."
+# V2 (12Hz) — x-vector only mode (no --ref-text)
 cargo run --release -- \
-    --text "Quick voice cloning." \
+    --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
     --ref-audio reference.wav \
+    --text "Quick voice cloning." \
     --output cloned_fast.wav
 
-# From local file 
+# V2 (12Hz) — ICL mode (with --ref-text)
 cargo run --release -- \
-    --text "This is my cloned voice speaking." \
+    --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
     --ref-audio reference.wav \
     --ref-text "The transcript of the reference audio." \
+    --text "This is my cloned voice speaking." \
     --output output_cloned.wav
 
-# From URL
-cargo run --features cuda,flash-attn,audio-loading -- \
-  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --ref-audio "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav" \
-  --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." \
-  --text "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye." \
-  --output output_cloned.wav
+# V1 (25Hz) — requires onnx-xvector feature (good for longform text)
+cargo run --release --features onnx-xvector -- \
+    --model Qwen/Qwen3-TTS-25Hz-0.6B-Base \
+    --ref-audio reference.wav \
+    --ref-text "The transcript of the reference audio." \
+    --text "This is my cloned voice speaking." \
+    --output output_cloned.wav
+
+# From URL (requires audio-loading feature)
+cargo run --release --features cuda,flash-attn,audio-loading -- \
+    --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+    --ref-audio "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav" \
+    --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." \
+    --text "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye." \
+    --output output_cloned.wav
 ```
 
 ### Batch Processing

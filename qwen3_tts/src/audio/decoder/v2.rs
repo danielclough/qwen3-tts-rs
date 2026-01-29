@@ -4,11 +4,13 @@ use candle_nn::{Module, VarBuilder};
 use crate::audio::{
     decoder::{config::TokenizerV2DecoderConfig, residual_unit::DecoderBlock},
     quantizer::SplitResidualVectorQuantizer,
-    tokenizer::v2::{
-        causal_conv::{CausalConv1d, CausalConvTranspose1d},
-        convnext::ConvNeXtBlock,
+    tokenizer::{
         snake_beta::SnakeBeta,
-        transformer::TokenizerV2DecoderTransformer,
+        v2::{
+            causal_conv::{CausalConv1d, CausalConvTranspose1d},
+            convnext::ConvNeXtBlock,
+            transformer::TokenizerV2DecoderTransformer,
+        },
     },
 };
 

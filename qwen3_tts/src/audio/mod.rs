@@ -10,6 +10,8 @@
 pub mod decoder;
 pub mod encoder;
 pub mod mel;
+pub mod mel_v1;
 pub mod quantizer;
+pub mod quantizer_v1;
 pub mod tokenizer;
 pub mod utils;

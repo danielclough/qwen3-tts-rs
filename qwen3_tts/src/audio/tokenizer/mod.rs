@@ -1,4 +1,4 @@
-//! 12Hz Audio Tokenizer (V2).
+//! Audio Tokenizer infrastructure.
 //!
 //! This tokenizer converts between audio waveforms and discrete codes at 12.5Hz.
 //! It consists of:
@@ -11,5 +11,7 @@
 //! - Transformer for sequence modeling
 //! - Snake activation-based vocoder
 
+pub mod snake_beta;
+pub mod v1;
 pub mod v2;
 pub mod wrapper;

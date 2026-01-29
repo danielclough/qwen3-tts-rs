@@ -138,6 +138,10 @@ pub struct Cli {
     #[arg(long)]
     pub debug: bool,
 
+    /// Estimate max-tokens from text length and use it for generation
+    #[arg(long)]
+    pub estimate_max_tokens: bool,
+
     /// Enable tracing output (debug logs). Use RUST_LOG env var to filter levels.
     #[arg(long)]
     pub tracing: bool,
@@ -246,6 +250,7 @@ impl Cli {
             subtalker_top_k: self.subtalker_top_k,
             subtalker_top_p: self.subtalker_top_p,
             no_subtalker_sample: self.no_subtalker_sample,
+            estimate_max_tokens: self.estimate_max_tokens,
         }
     }
 

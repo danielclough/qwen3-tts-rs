@@ -3,7 +3,6 @@
 pub mod causal_conv;
 pub mod config;
 pub mod convnext;
-pub mod snake_beta;
 pub mod transformer;
 
 use candle_core::{Result, Tensor};

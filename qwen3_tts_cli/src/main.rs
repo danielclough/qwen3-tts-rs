@@ -121,7 +121,7 @@ fn main() -> Result<()> {
     // Convert CLI args to lib structs
     let io_args = cli.to_io_args();
     let model_args = cli.to_model_args();
-    let gen_args = cli.to_generation_args();
+    let mut gen_args = cli.to_generation_args();
     let voice_args = cli.to_voice_args();
     let synthesis_mode = cli.to_synthesis_mode();
 
@@ -306,6 +306,27 @@ fn main() -> Result<()> {
         );
     }
 
+    // Estimate max tokens from text length if requested
+    if gen_args.estimate_max_tokens {
+        let rate = model.tokenizer_rate();
+        let mut max_estimated = 0usize;
+        for item in &batch_items {
+            let token_count = model
+                .tokenize_text(&item.text)
+                .map(|t| t.len())
+                .unwrap_or(item.text.len());
+            let estimated_duration = token_count as f64 / 3.0;
+            let estimated = (estimated_duration * rate as f64 * 1.2) as usize;
+            max_estimated = max_estimated.max(estimated);
+        }
+        let estimated = max_estimated.max(256);
+        println!(
+            "Estimated max-tokens: {} (tokenizer rate: {}Hz)",
+            estimated, rate
+        );
+        gen_args.max_tokens = estimated;
+    }
+
     // Perform synthesis based on mode
     match mode {
         DetectedMode::CustomVoice { speaker, instruct } => {
@@ -432,10 +453,8 @@ fn main() -> Result<()> {
                     &synth_item,
                 )?;
 
-                if i == 0 {
-                    if let Some(ref save_path) = io_args.save_prompt {
-                        println!("Saved voice prompt to {}", save_path.display());
-                    }
+                if i == 0 && let Some(ref save_path) = io_args.save_prompt {
+                    println!("Saved voice prompt to {}", save_path.display());
                 }
             }
         }
