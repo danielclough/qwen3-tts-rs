@@ -1,0 +1,462 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Stage 1: Tests (gate) ─────────────────────────────────────────────
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: linux-hf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-hf-
+      - name: Build
+        run: cargo build
+      - name: Unit tests
+        run: cargo test
+      - name: Integration tests
+        run: cargo test --features integration-tests -- --test-threads=1
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: macos-hf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-hf-
+      - name: Build
+        run: cargo build --features metal,accelerate
+      - name: Unit tests
+        run: cargo test --features metal,accelerate
+      - name: Integration tests
+        run: cargo test --features test-all-macos,accelerate -- --test-threads=1
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
+      - uses: actions/cache@v4
+        with:
+          path: ~\.cache\huggingface
+          key: windows-hf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-hf-
+      - name: Build
+        run: cargo build
+      - name: Unit tests
+        run: cargo test
+      - name: Integration tests
+        run: cargo test --features integration-tests -- --test-threads=1
+
+  # ── Stage 2: Build CLI binaries ────────────────────────────────────────
+  build:
+    needs: [test-linux, test-macos, test-windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 with CUDA + cuDNN + flash-attn
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: cuda,cudnn,flash-attn
+            install-cuda: true
+            artifact-name: cli-linux-x86_64-cuda
+
+          # Linux x86_64 CPU-only
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: ""
+            artifact-name: cli-linux-x86_64
+
+          # Linux aarch64 CPU-only (cross-compiled)
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            features: ""
+            cross: true
+            artifact-name: cli-linux-aarch64
+
+          # Windows x86_64 with CUDA + cuDNN + flash-attn
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: cuda,cudnn,flash-attn
+            install-cuda: true
+            artifact-name: cli-windows-x86_64-cuda
+
+          # Windows x86_64 CPU-only
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: ""
+            artifact-name: cli-windows-x86_64
+
+          # Windows aarch64 CPU-only (cross-compiled)
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            features: ""
+            cross: true
+            artifact-name: cli-windows-aarch64
+
+          # macOS Apple Silicon with Metal + Accelerate
+          - os: macos-14
+            target: aarch64-apple-darwin
+            features: metal,accelerate
+            artifact-name: cli-macos-aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Linux dependencies ──
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux' && !matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: Install Linux ARM64 cross-compilation tools
+        if: runner.os == 'Linux' && matrix.cross
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libssl-dev:arm64
+
+      # ── CUDA (Linux) ──
+      - name: Install CUDA (Linux)
+        if: runner.os == 'Linux' && matrix.install-cuda
+        run: |
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-4 libcudnn8 libcudnn8-dev
+          echo "CUDA_PATH=/usr/local/cuda-12.4" >> $GITHUB_ENV
+          echo "/usr/local/cuda-12.4/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "CUDA_COMPUTE_CAP=80" >> $GITHUB_ENV
+
+      # ── CUDA (Windows) ──
+      - name: Install CUDA (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cuda/12.4.0/network_installers/cuda_12.4.0_windows_network.exe" -OutFile cuda_installer.exe
+          Start-Process -Wait -FilePath "cuda_installer.exe" -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cublas_dev_12.4 curand_12.4 curand_dev_12.4 cusolver_12.4 cusolver_dev_12.4 cusparse_12.4 cusparse_dev_12.4 nvrtc_12.4 nvrtc_dev_12.4 nvml_dev_12.4"
+          echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4" >> $env:GITHUB_ENV
+          echo "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin" >> $env:GITHUB_PATH
+          echo "CUDA_COMPUTE_CAP=80" >> $env:GITHUB_ENV
+
+      - name: Install cuDNN (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-8.9.7.29_cuda12-archive.zip" -OutFile cudnn.zip
+          Expand-Archive cudnn.zip -DestinationPath cudnn
+          $cudnnDir = Get-ChildItem cudnn -Directory | Select-Object -First 1
+          Copy-Item "$($cudnnDir.FullName)\bin\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin\" -Force
+          Copy-Item "$($cudnnDir.FullName)\include\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include\" -Force
+          Copy-Item "$($cudnnDir.FullName)\lib\x64\*" "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64\" -Force
+
+          $cudaLib = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64"
+          $cudnnLibs = @(
+            "cudnn_adv_infer", "cudnn_adv_train",
+            "cudnn_cnn_infer", "cudnn_cnn_train",
+            "cudnn_ops_infer", "cudnn_ops_train"
+          )
+          foreach ($lib in $cudnnLibs) {
+            $pattern = "$lib*64*.lib"
+            $srcFile = Get-ChildItem -Path $cudaLib -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $srcFile) {
+              $dstPath = Join-Path $cudaLib "$lib.lib"
+              Copy-Item $srcFile.FullName $dstPath -Force
+            }
+          }
+
+          $cudnnLib = Join-Path $cudaLib "cudnn.lib"
+          if (-not (Test-Path $cudnnLib)) {
+            Write-Error "FATAL: cudnn.lib not found after cuDNN installation"
+            exit 1
+          }
+
+      - name: Install NVRTC (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          $cudaLib = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64"
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
+
+          $hasNvrtc = (Get-ChildItem -Path $cudaLib -Filter "nvrtc*.lib" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+          if ($hasNvrtc) {
+            Write-Host "NVRTC library already present"
+            exit 0
+          }
+
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip" -OutFile nvrtc.zip
+          Expand-Archive nvrtc.zip -DestinationPath nvrtc_extract
+
+          $nvrtcDir = Get-ChildItem nvrtc_extract -Directory | Select-Object -First 1
+          if (Test-Path "$($nvrtcDir.FullName)\lib\x64") {
+            Copy-Item "$($nvrtcDir.FullName)\lib\x64\*" $cudaLib -Force
+          }
+          if (Test-Path "$($nvrtcDir.FullName)\bin") {
+            Copy-Item "$($nvrtcDir.FullName)\bin\*" $cudaBin -Force
+          }
+
+      - name: Create CUDA lib symlinks (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          $cudaLib = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64"
+          $dstPath = Join-Path $cudaLib "nvrtc.lib"
+
+          if (Test-Path $dstPath) {
+            Write-Host "nvrtc.lib already exists"
+          } else {
+            $nvrtcSrc = Get-ChildItem -Path $cudaLib -Filter "nvrtc64_*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $nvrtcSrc) {
+              $nvrtcSrc = Get-ChildItem -Path $cudaLib -Filter "nvrtc_*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+            }
+            if ($null -ne $nvrtcSrc) {
+              Copy-Item $nvrtcSrc.FullName $dstPath -Force
+            } else {
+              Write-Error "No NVRTC import library found"
+              exit 1
+            }
+          }
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Merge cuDNN libs (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          $cudaLib = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64"
+          $cudnnLib = Join-Path $cudaLib "cudnn.lib"
+          $backup = Join-Path $cudaLib "cudnn_original.lib"
+
+          Copy-Item $cudnnLib $backup -Force
+
+          $componentLibs = Get-ChildItem -Path $cudaLib -Filter "cudnn*.lib" |
+            Where-Object { $_.Name -ne "cudnn.lib" -and $_.Name -ne "cudnn_original.lib" } |
+            Select-Object -ExpandProperty FullName
+
+          if ($componentLibs.Count -eq 0) { exit 0 }
+
+          $allInputLibs = @($backup) + $componentLibs
+          $libArgs = @("/OUT:$cudnnLib") + $allInputLibs
+          & lib.exe @libArgs
+
+          if ($LASTEXITCODE -ne 0) {
+            Copy-Item $backup $cudnnLib -Force
+            exit 1
+          }
+
+      - name: Build cuDNN version shim (Windows)
+        if: runner.os == 'Windows' && matrix.install-cuda
+        shell: pwsh
+        run: |
+          cl /nologo /c /EHsc cudnn_version_shim.c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          lib /nologo /OUT:cudnn_version_shim.lib cudnn_version_shim.obj
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $cudaLib = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64"
+          $cudnnLib = Join-Path $cudaLib "cudnn.lib"
+          $tempLib = Join-Path $cudaLib "cudnn_with_shim.lib"
+
+          & lib /nologo /OUT:$tempLib $cudnnLib cudnn_version_shim.lib
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          Remove-Item $cudnnLib -Force
+          Move-Item $tempLib $cudnnLib -Force
+
+      # ── Rust toolchain & cache ──
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.artifact-name }}
+          cache-on-failure: true
+
+      # ── Cross-compilation env ──
+      - name: Set cross-compilation environment (Linux ARM64)
+        if: runner.os == 'Linux' && matrix.cross
+        run: |
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+
+      # ── Build ──
+      - name: Build CLI (native)
+        if: "!matrix.cross"
+        run: cargo build --release --package qwen_tts_cli ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: Build CLI (cross)
+        if: matrix.cross
+        run: cargo build --release --package qwen_tts_cli --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      # ── Package ──
+      - name: Package (Linux/macOS native)
+        if: (runner.os == 'Linux' || runner.os == 'macOS') && !matrix.cross
+        run: |
+          mkdir -p release-pkg
+          cp target/release/qwen-tts release-pkg/
+          cd release-pkg
+          tar -czvf ../qwen-tts-${{ matrix.artifact-name }}.tar.gz qwen-tts
+
+      - name: Package (Linux cross)
+        if: runner.os == 'Linux' && matrix.cross
+        run: |
+          mkdir -p release-pkg
+          cp target/${{ matrix.target }}/release/qwen-tts release-pkg/
+          cd release-pkg
+          tar -czvf ../qwen-tts-${{ matrix.artifact-name }}.tar.gz qwen-tts
+
+      - name: Package (Windows native)
+        if: runner.os == 'Windows' && !matrix.cross
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-pkg
+          Copy-Item target/release/qwen-tts.exe release-pkg/
+          Compress-Archive -Path release-pkg/* -DestinationPath qwen-tts-${{ matrix.artifact-name }}.zip
+
+      - name: Package (Windows cross)
+        if: runner.os == 'Windows' && matrix.cross
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-pkg
+          Copy-Item target/${{ matrix.target }}/release/qwen-tts.exe release-pkg/
+          Compress-Archive -Path release-pkg/* -DestinationPath qwen-tts-${{ matrix.artifact-name }}.zip
+
+      # ── Upload ──
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: |
+            qwen-tts-*.tar.gz
+            qwen-tts-*.zip
+          retention-days: 1
+
+  # ── Stage 3: Create GitHub Release ─────────────────────────────────────
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: 'cli-*'
+          merge-multiple: false
+
+      - name: Collect release assets
+        id: collect
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+
+          echo "=== Release assets ==="
+          ls -la release-assets/
+
+          count=$(ls -1 release-assets/ 2>/dev/null | wc -l)
+          echo "asset_count=$count" >> $GITHUB_OUTPUT
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::No release assets found"
+          fi
+
+      - name: Create GitHub release
+        if: steps.collect.outputs.asset_count != '0'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Stage 4: Publish to crates.io ──────────────────────────────────────
+  publish:
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish qwen_tts
+        run: cargo publish --package qwen_tts
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish qwen_tts_cli
+        run: cargo publish --package qwen_tts_cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
